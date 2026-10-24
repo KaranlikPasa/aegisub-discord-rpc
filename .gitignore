@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+
+# PyInstaller & Build
+build/
+dist/
+*.spec
+*.manifest
+*.zip
+
+# Local settings & Temp
+config.json
+*.tmp
+*.lnk
+.vscode/
+.idea/
