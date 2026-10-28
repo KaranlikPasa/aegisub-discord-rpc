@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Aegisub Discord RPC
+Name[tr]=Aegisub Discord RPC
+Comment=Discord Rich Presence for Aegisub Subtitle Editor
+Comment[tr]=Aegisub Altyazı Düzenleyicisi için Discord Rich Presence Etkinliği
+Exec=/opt/aegisub-discord-rpc/aegisub-discord-rpc %u
+Icon=aegisub-discord-rpc
+Terminal=false
+Type=Application
+Categories=AudioVideo;AudioVideoEditing;Utility;
+Keywords=aegisub;discord;rpc;rich presence;subtitle;altyazi;
+StartupNotify=true

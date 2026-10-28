@@ -1,14 +1,19 @@
 """
 Configuration manager for Aegisub Discord Rich Presence.
-Handles loading, saving in %APPDATA%, and Windows Startup shortcut management.
+Handles loading, saving in %APPDATA% (Windows) or ~/.config (Linux),
+and startup shortcut / autostart management.
 """
 import json
 import os
 import sys
 
 def get_appdata_dir():
-    base = os.environ.get("APPDATA", os.path.expanduser("~"))
-    cfg_dir = os.path.join(base, "AegisubDiscordRPC")
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA", os.path.expanduser("~"))
+        cfg_dir = os.path.join(base, "AegisubDiscordRPC")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+        cfg_dir = os.path.join(base, "aegisub-discord-rpc")
     os.makedirs(cfg_dir, exist_ok=True)
     return cfg_dir
 
@@ -52,15 +57,45 @@ def save_config(config):
 
 
 def get_startup_shortcut_path():
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        startup_dir = os.path.join(appdata, r"Microsoft\Windows\Start Menu\Programs\Startup")
-        return os.path.join(startup_dir, "AegisubDiscordRPC.lnk")
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            startup_dir = os.path.join(appdata, r"Microsoft\Windows\Start Menu\Programs\Startup")
+            return os.path.join(startup_dir, "AegisubDiscordRPC.lnk")
     return None
 
 
 def set_windows_startup(enable=True):
-    """Creates or removes Windows Startup shortcut."""
+    """Creates or removes Windows Startup shortcut or Linux autostart desktop entry."""
+    if sys.platform != "win32":
+        autostart_dir = os.path.expanduser("~/.config/autostart")
+        desktop_file = os.path.join(autostart_dir, "aegisub-discord-rpc.desktop")
+        if not enable:
+            if os.path.exists(desktop_file):
+                try:
+                    os.remove(desktop_file)
+                except Exception:
+                    pass
+            return True
+        try:
+            os.makedirs(autostart_dir, exist_ok=True)
+            content = """[Desktop Entry]
+Type=Application
+Name=Aegisub Discord RPC
+Exec=/opt/aegisub-discord-rpc/aegisub-discord-rpc --minimized
+Icon=aegisub-discord-rpc
+Comment=Discord Rich Presence for Aegisub Subtitle Editor
+Terminal=false
+Categories=Utility;
+X-GNOME-Autostart-enabled=true
+"""
+            with open(desktop_file, "w", encoding="utf-8") as f:
+                f.write(content)
+            return True
+        except Exception as e:
+            print(f"Failed to set Linux autostart: {e}")
+            return False
+
     shortcut_path = get_startup_shortcut_path()
     if not shortcut_path:
         return False
