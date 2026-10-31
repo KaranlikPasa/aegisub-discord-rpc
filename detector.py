@@ -104,6 +104,21 @@ def get_aegisub_window_title(target_pid):
         except Exception:
             pass
 
+    # Wayland support: Hyprland
+    if not title:
+        try:
+            import subprocess
+            import json
+            res = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=1)
+            for client in json.loads(res.stdout):
+                if client.get("pid") == target_pid:
+                    candidate = client.get("title", "").strip()
+                    if " - Aegisub" in candidate or candidate.endswith("Aegisub") or client.get("class", "").lower() == "aegisub":
+                        title = candidate
+                        break
+        except Exception:
+            pass
+
     # Fallback: inspect open subtitle files of the process
     if not title:
         try:

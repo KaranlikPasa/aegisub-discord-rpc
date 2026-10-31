@@ -78,6 +78,12 @@ python main.py
 
 ## 📝 Sürüm Geçmişi (Changelog)
 
+### v1.0.4
+* **Fix (Discord RPC Drop / Rate Limit):** Discord IPC hız sınırı (rate limit) ve sürekli kopma/drop sorunu giderildi; gereksiz tekrarlı durum gönderimleri engellendi ve bekleme süresi eklendi.
+* **Fix (UI Donma / Asenkron İşlemler):** Python 3.14 ve Linux üzerinde arayüzün boş/donuk kalması sorunu thread-safe kuyruk (`queue.Queue`) ve tamamen asenkron arka plan işleyicisi ile çözüldü.
+* **Fix (Wayland / Hyprland & Sistem Tepsisi):** Hyprland üzerinde yerel pencere başlığı algılama (`hyprctl`) eklendi; sistem tepsisi (systray) bulunmayan ortamlarda `pystray` çökmeleri ve kilitlenmeler engellendi.
+* **Özellik (Single Instance):** Uygulamanın aynı anda birden fazla açılıp Discord soketi için çakışmasını engelleyen tekil örnek kilidi (single instance lock) eklendi.
+
 ### v1.0.3
 * **Arch Linux & Linux Desteği:** `ctypes.windll` bağımlılığı kaldırıldı, `xdotool`, `wmctrl` ve açık altyazı dosyası tespiti ile X11/Wayland tam uyumlu hale getirildi.
 * **Arch Linux Paketleme:** `PKGBUILD`, `install.sh`, `.desktop` entegrasyonu ve `~/.config/autostart` desteği eklendi.

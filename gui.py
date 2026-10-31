@@ -1,14 +1,14 @@
 """
 Modern GUI for Aegisub Discord Rich Presence.
-Using CustomTkinter and pystray.
+Using CustomTkinter and pystray with asynchronous background updates and thread-safe queue.
 """
 import os
 import sys
 import time
+import queue
 import threading
 import customtkinter as ctk
 from PIL import Image
-import pystray
 
 from config import load_config, save_config, set_windows_startup
 from detector import get_current_aegisub_state
@@ -40,6 +40,21 @@ PRESET_ACTIVITIES = [
 ]
 
 
+def check_system_tray_supported():
+    """Checks whether the current desktop environment has a working system tray."""
+    if sys.platform == "win32":
+        return True
+    try:
+        import Xlib.display
+        d = Xlib.display.Display()
+        atom = d.get_atom(f"_NET_SYSTEM_TRAY_S{d.get_default_screen()}")
+        owner = d.get_selection_owner(atom)
+        d.close()
+        return owner != Xlib.X.NONE
+    except Exception:
+        return False
+
+
 class AegisubRPCApp:
     def __init__(self, root, start_minimized=False):
         self.root = root
@@ -48,22 +63,36 @@ class AegisubRPCApp:
         self.is_running = True
         self.is_paused = False
         self.last_state = None
-        self.last_title = None
-        self.last_update_time = time.time()
         self.start_timestamp = int(time.time())
         self.tray_icon = None
-        self.clean_filename = self.config.get("clean_filename", True)
+        self.has_tray = check_system_tray_supported()
+
+        # Thread-safe cached configuration values
+        self.current_activity = self.config.get("activity_type", "Altyazı Çeviriyor")
+        self.current_custom_details = self.config.get("custom_details", "")
+        self.current_custom_state = self.config.get("custom_state", "")
         self.show_filename = self.config.get("show_filename", True)
+        self.clean_filename = self.config.get("clean_filename", True)
         self.auto_close_with_aegisub = self.config.get("auto_close_with_aegisub", True)
         self.has_seen_aegisub = False
+
+        # Thread-safe queue for UI updates from worker thread (prevents Python 3.14 thread safety issues)
+        self._ui_queue = queue.Queue()
+        self._worker_event = threading.Event()
 
         self._setup_window()
         self._build_ui()
         self._setup_tray()
 
-        # Start background monitor thread
+        # Start queue poller on UI thread
+        self._poll_ui_queue()
+
+        # Start background monitor & RPC worker thread
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
+
+        # Trigger immediate check
+        self._worker_event.set()
 
         # Start UI timer tick
         self._tick_timer()
@@ -97,10 +126,13 @@ class AegisubRPCApp:
         header.pack(fill="x", padx=16, pady=(16, 10))
 
         if os.path.exists(ICON_PNG):
-            pil_img = Image.open(ICON_PNG)
-            self.header_img = ctk.CTkImage(pil_img, size=(46, 46))
-            logo_label = ctk.CTkLabel(header, image=self.header_img, text="")
-            logo_label.pack(side="left", padx=(0, 12))
+            try:
+                pil_img = Image.open(ICON_PNG)
+                self.header_img = ctk.CTkImage(pil_img, size=(46, 46))
+                logo_label = ctk.CTkLabel(header, image=self.header_img, text="")
+                logo_label.pack(side="left", padx=(0, 12))
+            except Exception:
+                pass
 
         title_box = ctk.CTkFrame(header, fg_color="transparent")
         title_box.pack(side="left", fill="both")
@@ -151,9 +183,12 @@ class AegisubRPCApp:
 
         # Preview Icon & Details
         if os.path.exists(ICON_PNG):
-            self.prev_img = ctk.CTkImage(Image.open(ICON_PNG), size=(56, 56))
-            prev_logo = ctk.CTkLabel(preview_inner, image=self.prev_img, text="")
-            prev_logo.pack(side="left", padx=12, pady=12)
+            try:
+                self.prev_img = ctk.CTkImage(Image.open(ICON_PNG), size=(56, 56))
+                prev_logo = ctk.CTkLabel(preview_inner, image=self.prev_img, text="")
+                prev_logo.pack(side="left", padx=12, pady=12)
+            except Exception:
+                pass
 
         prev_text_box = ctk.CTkFrame(preview_inner, fg_color="transparent")
         prev_text_box.pack(side="left", fill="both", expand=True, pady=10)
@@ -169,7 +204,7 @@ class AegisubRPCApp:
 
         self.prev_details = ctk.CTkLabel(
             prev_text_box,
-            text="Altyazı Çeviriyor",
+            text=self.config.get("activity_type", "Altyazı Çeviriyor"),
             font=ctk.CTkFont(size=13),
             text_color="#dbdee1",
             anchor="w"
@@ -178,7 +213,7 @@ class AegisubRPCApp:
 
         self.prev_state = ctk.CTkLabel(
             prev_text_box,
-            text="Dosya bekleniyor...",
+            text="Aegisub aranıyor...",
             font=ctk.CTkFont(size=13),
             text_color="#949ba4",
             anchor="w"
@@ -297,9 +332,10 @@ class AegisubRPCApp:
         lbl_sys.pack(anchor="w", padx=14, pady=(6, 4))
 
         self.var_startup = ctk.BooleanVar(value=self.config.get("start_with_windows", False))
+        startup_text = "Sistem başladığında otomatik çalıştır" if sys.platform != "win32" else "Windows başladığında otomatik çalıştır"
         self.chk_startup = ctk.CTkCheckBox(
             settings_box,
-            text="Windows başladığında otomatik çalıştır",
+            text=startup_text,
             variable=self.var_startup,
             command=self._on_startup_toggled,
             fg_color="#5865f2",
@@ -308,9 +344,10 @@ class AegisubRPCApp:
         self.chk_startup.pack(anchor="w", padx=14, pady=4)
 
         self.var_tray_on_close = ctk.BooleanVar(value=self.config.get("minimize_to_tray_on_close", True))
+        tray_text = "Pencere kapatıldığında saatin yanına (arka plana) küçült" if self.has_tray else "Pencere kapatıldığında simge durumuna küçült"
         self.chk_tray = ctk.CTkCheckBox(
             settings_box,
-            text="Pencere kapatıldığında saatin yanına (arka plana) küçült",
+            text=tray_text,
             variable=self.var_tray_on_close,
             command=self._on_config_changed,
             fg_color="#5865f2",
@@ -345,9 +382,10 @@ class AegisubRPCApp:
         )
         self.btn_pause.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
+        minimize_btn_text = "Tepsiye Küçült" if self.has_tray else "Simge Durumuna Küçült"
         self.btn_minimize = ctk.CTkButton(
             btn_frame,
-            text="Tepsiye Küçült",
+            text=minimize_btn_text,
             command=self.minimize_to_tray,
             fg_color="#5865f2",
             hover_color="#4752c4",
@@ -370,24 +408,57 @@ class AegisubRPCApp:
         )
         self.btn_quit.pack(fill="x", padx=16, pady=(0, 10))
 
+    def _poll_ui_queue(self):
+        """Processes pending UI updates safely on the Tkinter main thread."""
+        try:
+            while True:
+                msg, *args = self._ui_queue.get_nowait()
+                if msg == "running":
+                    self._apply_ui_running(*args)
+                elif msg == "stopped":
+                    self._apply_ui_stopped(*args)
+                elif msg == "paused":
+                    self._apply_ui_paused()
+                elif msg == "auto_close":
+                    self.quit_app()
+                    return
+        except queue.Empty:
+            pass
+
+        if self.is_running:
+            try:
+                self.root.after(50, self._poll_ui_queue)
+            except Exception:
+                pass
+
     def _setup_tray(self):
-        if not os.path.exists(ICON_PNG):
+        if not self.has_tray or not os.path.exists(ICON_PNG):
             return
-        icon_img = Image.open(ICON_PNG)
-        menu = pystray.Menu(
-            pystray.MenuItem("Pencereyi Aç", self.restore_from_tray, default=True),
-            pystray.MenuItem("Duraklat / Devam Et", self._toggle_pause),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Tamamen Kapat", self.quit_app)
-        )
-        self.tray_icon = pystray.Icon("AegisubRPC", icon_img, "Aegisub Discord RPC", menu=menu)
-        self.tray_icon.run_detached()
+        try:
+            import pystray
+            icon_img = Image.open(ICON_PNG)
+            menu = pystray.Menu(
+                pystray.MenuItem("Pencereyi Aç", self.restore_from_tray, default=True),
+                pystray.MenuItem("Duraklat / Devam Et", self._toggle_pause),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("Tamamen Kapat", self.quit_app)
+            )
+            self.tray_icon = pystray.Icon("AegisubRPC", icon_img, "Aegisub Discord RPC", menu=menu)
+            self.tray_icon.run_detached()
+        except Exception:
+            self.tray_icon = None
 
     def minimize_to_tray(self):
-        self.root.withdraw()
+        if self.tray_icon:
+            self.root.withdraw()
+        else:
+            self.root.iconify()
 
     def restore_from_tray(self, icon=None, item=None):
-        self.root.after(0, self._show_window)
+        try:
+            self.root.after(0, self._show_window)
+        except Exception:
+            pass
 
     def _show_window(self):
         self.root.deiconify()
@@ -402,9 +473,10 @@ class AegisubRPCApp:
 
     def quit_app(self, icon=None, item=None):
         self.is_running = False
+        self._worker_event.set()
 
         def _do_shutdown():
-            # 1. Clear presence from Discord immediately
+            # 1. Clear presence from Discord immediately in background
             try:
                 if self.rpc:
                     self.rpc.clear()
@@ -412,10 +484,11 @@ class AegisubRPCApp:
             except Exception:
                 pass
 
-            # 2. Hide tray icon immediately so it disappears from taskbar/tray
+            # 2. Hide tray icon immediately if active
             try:
                 if self.tray_icon:
                     self.tray_icon.visible = False
+                    self.tray_icon.stop()
             except Exception:
                 pass
 
@@ -445,70 +518,80 @@ class AegisubRPCApp:
         self._on_config_changed()
 
     def _on_config_changed(self):
+        # Update thread-safe plain variables
         self.clean_filename = self.var_clean_filename.get()
         self.show_filename = self.var_show_filename.get()
         self.auto_close_with_aegisub = self.var_auto_close.get()
-        self.config["activity_type"] = self.cb_activity.get()
-        self.config["custom_details"] = self.entry_custom.get().strip()
+        self.current_activity = self.cb_activity.get()
+        self.current_custom_details = self.entry_custom.get().strip()
+        self.current_custom_state = self.entry_custom_state.get().strip()
+
+        # Update and save dictionary
+        self.config["activity_type"] = self.current_activity
+        self.config["custom_details"] = self.current_custom_details
         self.config["show_filename"] = self.show_filename
         self.config["clean_filename"] = self.clean_filename
-        self.config["custom_state"] = self.entry_custom_state.get().strip()
+        self.config["custom_state"] = self.current_custom_state
         self.config["start_with_windows"] = self.var_startup.get()
         self.config["minimize_to_tray_on_close"] = self.var_tray_on_close.get()
         self.config["auto_close_with_aegisub"] = self.auto_close_with_aegisub
         save_config(self.config)
-        self._update_presence_now()
+
+        # Trigger worker immediately without blocking UI
+        self._worker_event.set()
 
     def _toggle_pause(self, icon=None, item=None):
         self.is_paused = not self.is_paused
         if self.is_paused:
             self.btn_pause.configure(text="Devam Et", fg_color="#248046", hover_color="#1a6334")
             self.badge_status.configure(text="● Duraklatıldı", text_color="#f0b232")
-            self.rpc.clear()
         else:
             self.btn_pause.configure(text="Duraklat", fg_color="#3b3e45", hover_color="#4e5058")
-            self._update_presence_now()
+
+        self._worker_event.set()
 
     def _get_current_details_text(self):
-        preset = self.cb_activity.get()
-        if preset == "Özel Metin...":
-            custom = self.entry_custom.get().strip()
-            return custom if custom else "Altyazı Çeviriyor"
-        return preset
+        if self.current_activity == "Özel Metin...":
+            return self.current_custom_details if self.current_custom_details else "Altyazı Çeviriyor"
+        return self.current_activity
 
     def _get_current_state_text(self, file_name):
-        custom_override = self.entry_custom_state.get().strip()
-        if custom_override:
-            return custom_override
-        if not self.var_show_filename.get():
+        if self.current_custom_state:
+            return self.current_custom_state
+        if not self.show_filename:
             return ""
         return file_name if file_name else "Yeni Proje"
 
-    def _update_presence_now(self):
-        if self.is_paused:
-            return
-
-        is_running, file_name, raw_title, pid = get_current_aegisub_state(clean_filename=self.clean_filename)
-        details = self._get_current_details_text()
-        state = self._get_current_state_text(file_name)
-
-        # Update preview
-        self.prev_details.configure(text=details)
-        self.prev_state.configure(text=state if state else "Dosya gizlendi")
-
-        if is_running:
-            ok = self.rpc.update_presence(details=details, state=state)
-            if ok:
+    def _apply_ui_running(self, details, state, is_rpc_ok):
+        """Lightweight UI update executed safely on Tkinter main thread."""
+        try:
+            self.prev_details.configure(text=details)
+            self.prev_state.configure(text=state if state else "Dosya gizlendi")
+            if is_rpc_ok:
                 self.badge_status.configure(text="● Discord Aktif", text_color="#23a55a")
             else:
                 self.badge_status.configure(text="● Discord Bekleniyor", text_color="#f23f43")
-        else:
-            self.rpc.clear()
-            self.badge_status.configure(text="● Aegisub Bekleniyor", text_color="#949ba4")
+        except Exception:
+            pass
+
+    def _apply_ui_stopped(self, details):
+        """Lightweight UI update when Aegisub is not running."""
+        try:
+            self.prev_details.configure(text=details)
             self.prev_state.configure(text="Aegisub açık değil")
+            self.badge_status.configure(text="● Aegisub Bekleniyor", text_color="#949ba4")
+        except Exception:
+            pass
+
+    def _apply_ui_paused(self):
+        """Lightweight UI update when paused."""
+        try:
+            self.badge_status.configure(text="● Duraklatıldı", text_color="#f0b232")
+        except Exception:
+            pass
 
     def _tick_timer(self):
-        """Updates the preview elapsed timer every second."""
+        """Updates the preview elapsed timer every second on UI thread."""
         if self.is_running:
             try:
                 elapsed = int(time.time()) - self.start_timestamp
@@ -521,36 +604,47 @@ class AegisubRPCApp:
                 pass
 
     def _monitor_loop(self):
-        """Background thread that checks Aegisub every 2 seconds."""
+        """
+        Background worker thread:
+        Runs detection and Discord RPC operations asynchronously.
+        Never blocks the Tkinter main UI thread!
+        """
         while self.is_running:
-            if not self.is_paused:
+            if self.is_paused:
+                if self.rpc.is_connected:
+                    self.rpc.clear()
+                self._ui_queue.put(("paused",))
+            else:
                 try:
                     is_running, file_name, raw_title, pid = get_current_aegisub_state(clean_filename=self.clean_filename)
+                    details = self._get_current_details_text()
+                    state = self._get_current_state_text(file_name)
+
                     if is_running:
                         self.has_seen_aegisub = True
-                        # If project changed, reset start timestamp
                         if file_name != self.last_state:
                             self.start_timestamp = int(time.time())
                             self.last_state = file_name
 
-                        try:
-                            self.root.after(0, self._update_presence_now)
-                        except Exception:
-                            pass
+                        # Discord IPC network call runs in background
+                        ok = self.rpc.update_presence(details=details, state=state)
+                        self._ui_queue.put(("running", details, state, ok))
                     else:
                         if self.last_state is not None:
                             self.last_state = None
-                            try:
-                                self.root.after(0, self._update_presence_now)
-                            except Exception:
-                                pass
+                            self.rpc.clear()
+                            self._ui_queue.put(("stopped", details))
 
-                            # If Aegisub was running and is now closed, auto-close if enabled
+                            # Auto-close with aegisub if enabled
                             if self.has_seen_aegisub and self.auto_close_with_aegisub:
                                 time.sleep(0.5)
-                                self.quit_app()
+                                self._ui_queue.put(("auto_close",))
                                 break
+                        else:
+                            self._ui_queue.put(("stopped", details))
                 except Exception:
                     pass
 
-            time.sleep(2.0)
+            # Sleep up to 2 seconds or wake immediately on settings change
+            self._worker_event.wait(timeout=2.0)
+            self._worker_event.clear()

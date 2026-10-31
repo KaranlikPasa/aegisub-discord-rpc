@@ -79,10 +79,12 @@ def set_windows_startup(enable=True):
             return True
         try:
             os.makedirs(autostart_dir, exist_ok=True)
-            content = """[Desktop Entry]
+            local_bin = os.path.expanduser("~/.local/bin/aegisub-discord-rpc")
+            exec_bin = local_bin if os.path.exists(local_bin) else "/opt/aegisub-discord-rpc/aegisub-discord-rpc"
+            content = f"""[Desktop Entry]
 Type=Application
 Name=Aegisub Discord RPC
-Exec=/opt/aegisub-discord-rpc/aegisub-discord-rpc --minimized
+Exec={exec_bin} --minimized
 Icon=aegisub-discord-rpc
 Comment=Discord Rich Presence for Aegisub Subtitle Editor
 Terminal=false
