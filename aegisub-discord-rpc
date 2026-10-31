@@ -4,7 +4,25 @@
 # ==============================================================================
 set -e
 
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# Sembolik linki takip ederek gerçek dizini bul (symlink resolution)
+TARGET="${BASH_SOURCE[0]}"
+if command -v realpath >/dev/null 2>&1; then
+    TARGET="$(realpath "$TARGET")"
+    DIR="$( cd "$( dirname "$TARGET" )" && pwd )"
+else
+    while [ -h "$TARGET" ]; do
+        DIR="$( cd -P "$( dirname "$TARGET" )" && pwd )"
+        TARGET="$(readlink "$TARGET")"
+        [[ $TARGET != /* ]] && TARGET="$DIR/$TARGET"
+    done
+    DIR="$( cd -P "$( dirname "$TARGET" )" && pwd )"
+fi
+
+# Fallback: Eğer main.py bulunamazsa /opt kontrol et
+if [ ! -f "$DIR/main.py" ] && [ -f "/opt/aegisub-discord-rpc/main.py" ]; then
+    DIR="/opt/aegisub-discord-rpc"
+fi
+
 cd "$DIR"
 
 # Python kontrolü
